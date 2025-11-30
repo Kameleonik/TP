@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TimeSheet & CostCalc</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>⏱️ TimeSheet & CostCalc</h1>
+            <p>Śledź czas i obliczaj koszty projektów</p>
+        </header>
+
+        <div class="main-card">
+            <div class="timer-section">
+                <div class="timer-display" id="timerDisplay">00:00:00</div>
+                <div class="cost-display">
+                    <span class="currency">PLN</span>
+                    <span class="amount" id="costDisplay">0.00</span>
+                </div>
+            </div>
+
+            <div class="project-section">
+                <label>Projekt:</label>
+                <select id="projectSelect">
+                    <option value="">Wybierz projekt...</option>
+                </select>
+                <button id="addProjectBtn" class="btn-secondary">+ Dodaj Projekt</button>
+            </div>
+
+            <div class="rate-section">
+                <label>Stawka godzinowa:</label>
+                <div class="rate-input-group">
+                    <input type="number" id="hourlyRate" value="150" min="0" step="10">
+                    <span>PLN/h</span>
+                </div>
+            </div>
+
+            <div class="controls">
+                <button id="startBtn" class="btn-start">▶ START</button>
+                <button id="stopBtn" class="btn-stop" disabled>⏹ STOP</button>
+                <button id="saveBtn" class="btn-save" disabled>💾 ZAPISZ</button>
+                <button id="resetBtn" class="btn-reset">↻ RESET</button>
+            </div>
+
+            <div class="notes-section">
+                <label>Notatki:</label>
+                <textarea id="sessionNotes" placeholder="Opisz wykonaną pracę..."></textarea>
+            </div>
+        </div>
+
+        <div class="history-card">
+            <div class="history-header">
+                <h2>📊 Historia Sesji</h2>
+                <div class="history-stats">
+                    <div class="stat">
+                        <span class="stat-label">Dzisiaj:</span>
+                        <span class="stat-value" id="todayTotal">0h 0m</span>
+                    </div>
+                    <div class="stat">
+                        <span class="stat-label">Zarobione:</span>
+                        <span class="stat-value" id="todayEarnings">0 PLN</span>
+                    </div>
+                </div>
+            </div>
+            <div id="historyList" class="history-list"></div>
+        </div>
+    </div>
+
+    <div id="projectModal" class="modal">
+        <div class="modal-content">
+            <h3>Nowy Projekt</h3>
+            <input type="text" id="newProjectName" placeholder="Nazwa projektu">
+            <div class="modal-actions">
+                <button id="cancelProjectBtn" class="btn-secondary">Anuluj</button>
+                <button id="saveProjectBtn" class="btn-primary">Zapisz</button>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
+        import { getFirestore, collection, addDoc, getDocs, deleteDoc, doc } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js';
+
+        const firebaseConfig = {
+            apiKey: "AIzaSyChcctklohpqhqxl-tF7EJl47TTQ7b-oLA",
+            authDomain: "instagenius-9f123.firebaseapp.com",
+            projectId: "instagenius-9f123",
+            storageBucket: "instagenius-9f123.firebasestorage.app",
+            messagingSenderId: "572031758226",
+            appId: "1:572031758226:web:7f40d1b1ac9254b221db4b"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+
+        let timerInterval = null;
+        let startTime = null;
+        let elapsedTime = 0;
+        let sessions = [];
+        let projects = JSON.parse(localStorage.getItem('projects')) || [
+            { id: 'client-a', name: 'Klient A - Strona WWW' },
+            { id: 'client-b', name: 'Klient B - Aplikacja Mobile' },
+            { id: 'client-c', name: 'Klient C - Konsultacje' },
+            { id: 'internal', name: 'Projekt Wewnętrzny' }
+        ];
+
+        const timerDisplay = document.getElementById('timerDisplay');
+        const costDisplay = document.getElementById('costDisplay');
+        const projectSelect = document.getElementById('projectSelect');
+        const hourlyRate = document.getElementById('hourlyRate');
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const saveBtn = document.getElementById('saveBtn');
+        const resetBtn = document.getElementById('resetBtn');
+        const sessionNotes = document.getElementById('sessionNotes');
+        const historyList = document.getElementById('historyList');
+        const todayTotal = document.getElementById('todayTotal');
+        const todayEarnings = document.getElementById('todayEarnings');
+        const addProjectBtn = document.getElementById('addProjectBtn');
+        const projectModal = document.getElementById('projectModal');
+        const newProjectName = document.getElementById('newProjectName');
+        const cancelProjectBtn = document.getElementById('cancelProjectBtn');
+        const saveProjectBtn = document.getElementById('saveProjectBtn');
+
+        loadProjects();
+        loadSessions();
+
+        async function loadSessions() {
+            // Wyczyść localStorage
+            localStorage.removeItem('sessions');
+            sessions = [];
+            
+            try {
+                const querySnapshot = await getDocs(collection(db, 'sessions'));
+                sessions = querySnapshot.docs.map(d => ({
+                    id: d.id,
+                    ...d.data()
+                }));
+                console.log('Załadowano z Firebase:', sessions.length, 'sesji');
+            } catch (error) {
+                console.error('Firebase error:', error);
+            }
+            
+            renderHistory();
+            updateTodayStats();
+        }
+
+        startBtn.addEventListener('click', () => {
+            if (!projectSelect.value) {
+                alert('Wybierz projekt!');
+                return;
+            }
+            startTime = Date.now() - elapsedTime;
+            timerInterval = setInterval(updateTimer, 100);
+            startBtn.disabled = true;
+            stopBtn.disabled = false;
+            saveBtn.disabled = false;
+            projectSelect.disabled = true;
+        });
+
+        stopBtn.addEventListener('click', () => {
+            clearInterval(timerInterval);
+            timerInterval = null;
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+            saveBtn.disabled = false;
+            projectSelect.disabled = false;
+        });
+
+        saveBtn.addEventListener('click', async () => {
+            if (elapsedTime === 0) {
+                alert('Brak czasu do zapisania!');
+                return;
+            }
+
+            const sessionData = {
+                project: projectSelect.value,
+                projectName: projectSelect.options[projectSelect.selectedIndex].text,
+                duration: elapsedTime,
+                cost: (elapsedTime / 3600000) * parseFloat(hourlyRate.value),
+                rate: parseFloat(hourlyRate.value),
+                notes: sessionNotes.value,
+                date: new Date().toISOString()
+            };
+            
+            try {
+                const docRef = await addDoc(collection(db, 'sessions'), sessionData);
+                sessions.unshift({
+                    id: docRef.id,
+                    ...sessionData
+                });
+                showNotification('✅ Zapisano w Firebase!');
+            } catch (error) {
+                console.error('Firebase error:', error);
+                showNotification('❌ Błąd zapisu do Firebase!');
+                return;
+            }
+            
+            renderHistory();
+            updateTodayStats();
+            resetTimer();
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+            saveBtn.disabled = true;
+            projectSelect.disabled = false;
+        });
+
+        resetBtn.addEventListener('click', () => {
+            clearInterval(timerInterval);
+            timerInterval = null;
+            elapsedTime = 0;
+            startTime = null;
+            updateDisplay();
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+            saveBtn.disabled = true;
+            projectSelect.disabled = false;
+            sessionNotes.value = '';
+        });
+
+        function updateTimer() {
+            elapsedTime = Date.now() - startTime;
+            updateDisplay();
+        }
+
+        function updateDisplay() {
+            const hours = Math.floor(elapsedTime / 3600000);
+            const minutes = Math.floor((elapsedTime % 3600000) / 60000);
+            const seconds = Math.floor((elapsedTime % 60000) / 1000);
+            timerDisplay.textContent = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+            const hoursDecimal = elapsedTime / 3600000;
+            const cost = hoursDecimal * parseFloat(hourlyRate.value);
+            costDisplay.textContent = cost.toFixed(2);
+        }
+
+        function resetTimer() {
+            clearInterval(timerInterval);
+            timerInterval = null;
+            elapsedTime = 0;
+            startTime = null;
+            updateDisplay();
+            sessionNotes.value = '';
+            saveBtn.disabled = true;
+        }
+
+        function renderHistory() {
+            if (sessions.length === 0) {
+                historyList.innerHTML = '<div class="empty-history">Brak sesji</div>';
+                return;
+            }
+            
+            historyList.innerHTML = sessions.map(session => {
+                const hours = Math.floor(session.duration / 3600000);
+                const minutes = Math.floor((session.duration % 3600000) / 60000);
+                const date = new Date(session.date);
+                
+                return `
+                    <div class="history-item">
+                        <div class="history-item-info">
+                            <div class="history-item-project">${session.projectName}</div>
+                            <div class="history-item-time">
+                                ${date.toLocaleDateString('pl-PL')} ${date.toLocaleTimeString('pl-PL')} • 
+                                ${hours}h ${minutes}m • ${session.rate} PLN/h
+                            </div>
+                            ${session.notes ? `<div class="history-item-notes">${session.notes}</div>` : ''}
+                        </div>
+                        <div class="history-item-cost">${session.cost.toFixed(2)} PLN</div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function updateTodayStats() {
+            const today = new Date().toDateString();
+            const todaySessions = sessions.filter(s => new Date(s.date).toDateString() === today);
+            const totalTime = todaySessions.reduce((sum, s) => sum + s.duration, 0);
+            const totalEarnings = todaySessions.reduce((sum, s) => sum + s.cost, 0);
+            const hours = Math.floor(totalTime / 3600000);
+            const minutes = Math.floor((totalTime % 3600000) / 60000);
+            todayTotal.textContent = `${hours}h ${minutes}m`;
+            todayEarnings.textContent = `${totalEarnings.toFixed(2)} PLN`;
+        }
+
+
+
+        function loadProjects() {
+            projectSelect.innerHTML = '<option value="">Wybierz projekt...</option>';
+            projects.forEach(project => {
+                const option = document.createElement('option');
+                option.value = project.id;
+                option.textContent = project.name;
+                projectSelect.appendChild(option);
+            });
+        }
+
+        addProjectBtn.addEventListener('click', () => {
+            projectModal.classList.add('show');
+            newProjectName.focus();
+        });
+
+        cancelProjectBtn.addEventListener('click', () => {
+            projectModal.classList.remove('show');
+            newProjectName.value = '';
+        });
+
+        saveProjectBtn.addEventListener('click', () => {
+            const name = newProjectName.value.trim();
+            if (!name) {
+                alert('Podaj nazwę!');
+                return;
+            }
+            
+            const project = {
+                id: 'project-' + Date.now(),
+                name: name
+            };
+            
+            projects.push(project);
+            localStorage.setItem('projects', JSON.stringify(projects));
+            loadProjects();
+            projectSelect.value = project.id;
+            projectModal.classList.remove('show');
+            newProjectName.value = '';
+        });
+
+        function showNotification(message) {
+            const notification = document.createElement('div');
+            notification.className = 'notification';
+            notification.textContent = message;
+            document.body.appendChild(notification);
+            
+            setTimeout(() => notification.classList.add('show'), 10);
+            setTimeout(() => {
+                notification.classList.remove('show');
+                setTimeout(() => notification.remove(), 300);
+            }, 3000);
+        }
+    </script>
+</body>
+</html>
